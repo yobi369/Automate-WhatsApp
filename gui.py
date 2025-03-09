@@ -35,13 +35,37 @@ class WhatsAppAutomationApp:
         self.schedule_entry = tk.Entry(root, width=20)
         self.schedule_entry.pack()
 
-        self.send_button = tk.Button(root, text="Send Message", command=self.schedule_message)
-        self.contact_management_button = tk.Button(root, text="Manage Contacts", command=self.manage_contacts)
-        self.contacts = []  # Initialize an empty list to store contacts
+        self.send_button = tk.Button(root, text="Send Message", command=self.open_log_window)
         self.send_button.pack()
+        
+        self.view_logs_button = tk.Button(root, text="View Logs", command=self.open_log_window)
+        self.view_logs_button.pack()
+        
+        self.contact_management_button = tk.Button(root, text="Manage Contacts", command=self.manage_contacts)
         self.contact_management_button.pack()
+        
+        self.view_contacts_button = tk.Button(root, text="View Contacts", command=self.view_contacts)
+        self.view_contacts_button.pack()
+        
+        self.contacts = []  # Initialize an empty list to store contacts
 
-    def schedule_message(self):
+        # Create database tables
+        database.create_table()
+        database.create_contact_table()
+
+    def open_log_window(self):
+        log_window = tk.Toplevel(self.root)
+        log_window.title("Message Logs")
+
+        # Create a Listbox to display logs
+        self.log_listbox = tk.Listbox(log_window, width=80)
+        self.log_listbox.pack()
+
+        # Fetch logs and populate the Listbox
+        logs = database.get_logs()
+        for log in logs:
+            self.log_listbox.insert(tk.END, f"ID: {log[0]}, Phone: {log[1]}, Message: {log[2]}, Status: {log[3]}, Time: {log[4]}")
+        
         phone_numbers = self.phone_numbers_entry.get().split(',')
         message = self.message_entry.get()
         schedule_time = self.schedule_entry.get().split(':')
@@ -49,13 +73,23 @@ class WhatsAppAutomationApp:
         minute = int(schedule_time[1])
 
         # Schedule the message
+        messagebox.showinfo("Scheduled", "Message has been scheduled!")
         for p_num in phone_numbers:
             schedule.every().day.at(f"{int(hour):02}:{int(minute):02}").do(self.send_message, p_num.strip(), message, hour, minute)
-            messagebox.showinfo("Scheduled", "Message has been scheduled!")
-        messagebox.showinfo("Scheduled", "Message has been scheduled!")
 
         # Start a background thread to run the scheduler
         self.run_scheduler()
+
+    def view_contacts(self):
+        contacts = database.get_contacts()
+        contact_window = tk.Toplevel(self.root)
+        contact_window.title("Contacts")
+
+        contact_listbox = tk.Listbox(contact_window, width=50)
+        contact_listbox.pack()
+
+        for contact in contacts:
+            contact_listbox.insert(tk.END, f"{contact[1]}: {contact[2]}")  # Name: Phone Number
 
     def add_contact(self):
         contact_name = simpledialog.askstring("Input", "Enter contact name:")
@@ -70,7 +104,6 @@ class WhatsAppAutomationApp:
             messagebox.showinfo("Success", f"Message sent to {p_num.strip()} at {hour}:{minute} with message: {personalized_message}")
             database.log_message(p_num.strip(), personalized_message, "Sent")
             logging.info(f"Message sent to {p_num.strip()} at {hour}:{minute} with message: {personalized_message}")
-            messagebox.showinfo("Success", f"Message sent to {p_num.strip()} at {hour}:{minute} with message: {personalized_message}")
         except Exception as e:
             logging.error(f"Failed to send message to {p_num.strip()}: {e}")
             messagebox.showerror("Error", f"Failed to send message to {p_num.strip()}: {e}")
@@ -92,6 +125,16 @@ class WhatsAppAutomationApp:
         self.delete_contact_button.pack()
 
         self.load_contacts()
+
+    def delete_contact(self):
+        selected_contact_index = self.contact_listbox.curselection()
+        if selected_contact_index:
+            contact_id = self.contacts[selected_contact_index[0]][0]  # Assuming the first element is the ID
+            database.delete_contact(contact_id)
+            self.contact_listbox.delete(selected_contact_index)
+            messagebox.showinfo("Success", "Contact deleted successfully.")
+        else:
+            messagebox.showwarning("Warning", "Please select a contact to delete.")
 
     def run_scheduler(self):
         while True:
