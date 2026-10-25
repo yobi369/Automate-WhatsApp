@@ -1,16 +1,15 @@
 import logging
 import queue
-import re
 import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
-from datetime import datetime
 
 import pywhatkit
 import schedule
 
 import database
+from validation import validate_daily_time, validate_message, validate_recipients
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(
@@ -68,26 +67,11 @@ class WhatsAppAutomationApp:
         self.status = tk.StringVar(value="Ready. Scheduled jobs run daily until the app closes.")
         ttk.Label(frame, textvariable=self.status, wraplength=570).pack(anchor="w", pady=(12, 0))
 
-    def _validated_recipients(self):
-        raw = self.phone_entry.get().strip()
-        numbers = [part.strip() for part in raw.split(",") if part.strip()]
-        if not numbers:
-            raise ValueError("Enter at least one recipient phone number.")
-        invalid = [number for number in numbers if not PHONE_RE.fullmatch(number)]
-        if invalid:
-            raise ValueError("Use international E.164 format, e.g. +2547XXXXXXXX. Invalid: " + ", ".join(invalid))
-        if len(set(numbers)) != len(numbers):
-            raise ValueError("Duplicate recipient numbers were entered.")
-        return numbers
-
     def schedule_messages(self):
         try:
-            recipients = self._validated_recipients()
-            message = self.message_entry.get("1.0", "end-1c").strip()
-            if not message:
-                raise ValueError("Message cannot be empty.")
-            time_text = self.time_entry.get().strip()
-            datetime.strptime(time_text, "%H:%M")
+            recipients = validate_recipients(self.phone_entry.get())
+            message = validate_message(self.message_entry.get("1.0", "end-1c"))
+            time_text = validate_daily_time(self.time_entry.get())
         except ValueError as exc:
             messagebox.showerror("Check your input", str(exc), parent=self.root)
             return
@@ -116,8 +100,8 @@ class WhatsAppAutomationApp:
 
     def _send_message(self, phone, template):
         # Called by the scheduler worker, never directly by the Tkinter event loop.
-        personalized = template.format(name=phone)
         try:
+            personalized = template.format(name=phone)
             # This sends immediately when the scheduled job fires. It relies on
             # WhatsApp Web/browser automation and may fail if the session is not ready.
             pywhatkit.sendwhatmsg_instantly(
@@ -130,7 +114,7 @@ class WhatsAppAutomationApp:
             database.log_message(phone, personalized, "Failed: " + str(exc)[:300])
             LOG.exception("Automation failed for recipient ending %s", phone[-4:])
             self.jobs.put(("error", f"Could not send to recipient ending {phone[-4:]}: {exc}"))
-        return schedule.CancelJob  # One-time job; users can schedule it again.
+        # Keep the job scheduled daily; the UI explicitly labels this recurring behavior.
 
     def open_logs(self):
         window = tk.Toplevel(self.root)
@@ -160,11 +144,9 @@ class WhatsAppAutomationApp:
             phone = simpledialog.askstring("Add contact", "Phone in international format (+254...):", parent=window)
             if not phone:
                 return
-            phone = phone.strip()
-            if not PHONE_RE.fullmatch(phone):
-                messagebox.showerror("Invalid number", "Use international E.164 format, e.g. +2547XXXXXXXX.", parent=window)
-                return
             try:
+                from validation import normalize_phone
+                phone = normalize_phone(phone)
                 database.add_contact(name.strip(), phone)
                 refresh()
             except Exception as exc:
