@@ -35,7 +35,9 @@ class WhatsAppAutomationApp:
         )
         database.create_table()
         database.create_contact_table()
+        database.create_scheduled_jobs_table()
         self._build_ui()
+        self._load_scheduled_jobs()
         self.scheduler_thread.start()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -62,6 +64,7 @@ class WhatsAppAutomationApp:
         ttk.Button(row, text="Schedule", command=self.schedule_messages).pack(side="left")
         ttk.Button(row, text="View logs", command=self.open_logs).pack(side="left", padx=6)
         ttk.Button(row, text="Contacts", command=self.manage_contacts).pack(side="left")
+        ttk.Button(row, text="Schedules", command=self.manage_schedules).pack(side="left", padx=6)
 
         self.status = tk.StringVar(value="Ready. Scheduled jobs run daily until the app closes.")
         ttk.Label(frame, textvariable=self.status, wraplength=570).pack(anchor="w", pady=(12, 0))
@@ -84,19 +87,65 @@ class WhatsAppAutomationApp:
             return
 
         added = 0
-        for number in recipients:
-            signature = (number, message, time_text)
-            if signature in self.scheduled_signatures:
-                continue
-            schedule.every().day.at(time_text).do(self._send_message, number, message)
-            self.scheduled_signatures.add(signature)
-            added += 1
+        try:
+            for number in recipients:
+                signature = (number, message, time_text)
+                if signature in self.scheduled_signatures:
+                    continue
+                database.add_scheduled_job(number, message, time_text)
+                schedule.every().day.at(time_text).do(self._send_message, number, message)
+                self.scheduled_signatures.add(signature)
+                added += 1
+        except Exception as exc:
+            messagebox.showerror("Could not save schedule", str(exc), parent=self.root)
+            self._reload_schedules()
+            return
         if added == 0:
             self.status.set("These recipients already have this message scheduled for that time.")
             return
         database.log_message(", ".join(recipients), message, "Scheduled daily at " + time_text)
         self.status.set(f"Scheduled {added} new recipient(s) daily at {time_text}.")
         LOG.info("Scheduled %d new recipient(s) for %s", added, time_text)
+
+    def _load_scheduled_jobs(self):
+        """Restore enabled daily jobs from SQLite after app startup."""
+        for _job_id, phone, message, send_time, _enabled, _created in database.get_scheduled_jobs():
+            signature = (phone, message, send_time)
+            if signature not in self.scheduled_signatures:
+                schedule.every().day.at(send_time).do(self._send_message, phone, message)
+                self.scheduled_signatures.add(signature)
+
+    def _reload_schedules(self):
+        schedule.clear()
+        self.scheduled_signatures.clear()
+        self._load_scheduled_jobs()
+
+    def manage_schedules(self):
+        window = tk.Toplevel(self.root)
+        window.title("Scheduled messages")
+        window.geometry("780x360")
+        listing = tk.Listbox(window, width=110)
+        listing.pack(fill="both", expand=True, padx=10, pady=10)
+
+        def refresh():
+            listing.delete(0, tk.END)
+            for job in database.get_scheduled_jobs():
+                listing.insert(tk.END, f"{job[0]} | Daily {job[3]} | {job[1]} | {job[2][:90]}")
+
+        def cancel_selected():
+            selected = listing.curselection()
+            if not selected:
+                messagebox.showinfo("Select schedule", "Select a scheduled message first.", parent=window)
+                return
+            job_id = int(listing.get(selected[0]).split("|", 1)[0].strip())
+            if messagebox.askyesno("Cancel schedule", "Remove this recurring schedule?", parent=window):
+                database.delete_scheduled_job(job_id)
+                self._reload_schedules()
+                refresh()
+                self.status.set("Selected recurring schedule cancelled.")
+
+        ttk.Button(window, text="Cancel selected schedule", command=cancel_selected).pack(pady=(0, 10))
+        refresh()
 
     def _scheduler_loop(self):
         while not self.stop_event.is_set():
