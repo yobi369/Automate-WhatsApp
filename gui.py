@@ -17,7 +17,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 
-PHONE_RE = re.compile(r"^\+[1-9]\d{7,14}$")
 
 
 class WhatsAppAutomationApp:
