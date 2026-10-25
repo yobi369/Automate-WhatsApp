@@ -1,7 +1,6 @@
 import logging
 import queue
 import threading
-import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
