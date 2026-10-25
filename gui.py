@@ -1,147 +1,296 @@
-import tkinter as tk
-from tkinter import messagebox, simpledialog
-import pywhatkit as kt
-import database
-import schedule
-import time
 import logging
+import queue
+import threading
+import tkinter as tk
+from tkinter import messagebox, simpledialog, ttk
 
-# Set up logging
-logging.basicConfig(filename='whatsapp_automation.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import pywhatkit
+import schedule
+
+import database
+from validation import validate_daily_time, validate_message, validate_recipients
+
+LOG = logging.getLogger(__name__)
+logging.basicConfig(
+    filename="whatsapp_automation.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
+
 
 class WhatsAppAutomationApp:
+    """Small Tkinter UI with background scheduling and safe UI-thread updates."""
+
     def __init__(self, root):
         self.root = root
         self.root.title("WhatsApp Automation Tool")
-
-        # Create input fields
-        self.phone_numbers_label = tk.Label(root, text="Phone Numbers (comma separated):")
-        self.phone_numbers_label.pack()
-        self.phone_numbers_entry = tk.Entry(root, width=50)
-        self.phone_numbers_entry.pack()
-
-        self.message_label = tk.Label(root, text="Message:")
-        self.message_label.pack()
-        self.message_entry = tk.Entry(root, width=50)
-        self.message_entry.pack()
-
-        self.personalization_label = tk.Label(root, text="Personalization (e.g., {name}):")
-        self.personalization_label.pack()
-        self.personalization_entry = tk.Entry(root, width=50)
-        self.personalization_entry.pack()
-
-        self.schedule_label = tk.Label(root, text="Schedule Time (HH:MM):")
-        self.schedule_label.pack()
-        self.schedule_entry = tk.Entry(root, width=20)
-        self.schedule_entry.pack()
-
-        self.send_button = tk.Button(root, text="Send Message", command=self.open_log_window)
-        self.send_button.pack()
-        
-        self.view_logs_button = tk.Button(root, text="View Logs", command=self.open_log_window)
-        self.view_logs_button.pack()
-        
-        self.contact_management_button = tk.Button(root, text="Manage Contacts", command=self.manage_contacts)
-        self.contact_management_button.pack()
-        
-        self.view_contacts_button = tk.Button(root, text="View Contacts", command=self.view_contacts)
-        self.view_contacts_button.pack()
-        
-        self.contacts = []  # Initialize an empty list to store contacts
-
-        # Create database tables
+        self.root.geometry("640x560")
+        self.root.minsize(520, 420)
+        self.jobs = queue.Queue()
+        self.send_queue = queue.Queue()
+        self.schedule_lock = threading.RLock()
+        self.scheduled_signatures = set()
+        self.stop_event = threading.Event()
+        self.scheduler_thread = threading.Thread(
+            target=self._scheduler_loop, name="message-scheduler", daemon=True
+        )
+        self.sender_thread = threading.Thread(
+            target=self._sender_loop, name="message-sender", daemon=True
+        )
         database.create_table()
         database.create_contact_table()
+        database.create_scheduled_jobs_table()
+        self._build_ui()
+        self._load_scheduled_jobs()
+        self.scheduler_thread.start()
+        self.sender_thread.start()
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
 
-    def open_log_window(self):
-        log_window = tk.Toplevel(self.root)
-        log_window.title("Message Logs")
+    def _build_ui(self):
+        frame = ttk.Frame(self.root, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="WhatsApp Automation", font=("TkDefaultFont", 16, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Use international numbers, e.g. +2547XXXXXXXX").pack(anchor="w", pady=(4, 12))
 
-        # Create a Listbox to display logs
-        self.log_listbox = tk.Listbox(log_window, width=80)
-        self.log_listbox.pack()
+        ttk.Label(frame, text="Recipients (comma-separated)").pack(anchor="w")
+        self.phone_entry = ttk.Entry(frame)
+        self.phone_entry.pack(fill="x", pady=(2, 10))
 
-        # Fetch logs and populate the Listbox
-        logs = database.get_logs()
-        for log in logs:
-            self.log_listbox.insert(tk.END, f"ID: {log[0]}, Phone: {log[1]}, Message: {log[2]}, Status: {log[3]}, Time: {log[4]}")
-        
-        phone_numbers = self.phone_numbers_entry.get().split(',')
-        message = self.message_entry.get()
-        schedule_time = self.schedule_entry.get().split(':')
-        hour = int(schedule_time[0])
-        minute = int(schedule_time[1])
+        ttk.Label(frame, text="Message (optional {name} placeholder)").pack(anchor="w")
+        self.message_entry = tk.Text(frame, height=6, wrap="word")
+        self.message_entry.pack(fill="both", expand=True, pady=(2, 10))
 
-        # Schedule the message
-        messagebox.showinfo("Scheduled", "Message has been scheduled!")
-        for p_num in phone_numbers:
-            schedule.every().day.at(f"{int(hour):02}:{int(minute):02}").do(self.send_message, p_num.strip(), message, hour, minute)
+        row = ttk.Frame(frame)
+        row.pack(fill="x")
+        ttk.Label(row, text="Send daily at (24-hour HH:MM)").pack(side="left")
+        self.time_entry = ttk.Entry(row, width=10)
+        self.time_entry.insert(0, "09:00")
+        self.time_entry.pack(side="left", padx=8)
+        ttk.Button(row, text="Schedule", command=self.schedule_messages).pack(side="left")
+        ttk.Button(row, text="View logs", command=self.open_logs).pack(side="left", padx=6)
+        ttk.Button(row, text="Contacts", command=self.manage_contacts).pack(side="left")
+        ttk.Button(row, text="Schedules", command=self.manage_schedules).pack(side="left", padx=6)
 
-        # Start a background thread to run the scheduler
-        self.run_scheduler()
+        self.status = tk.StringVar(value="Ready. Saved daily schedules run while the app is open and restore after restart.")
+        ttk.Label(frame, textvariable=self.status, wraplength=570).pack(anchor="w", pady=(12, 0))
 
-    def view_contacts(self):
-        contacts = database.get_contacts()
-        contact_window = tk.Toplevel(self.root)
-        contact_window.title("Contacts")
-
-        contact_listbox = tk.Listbox(contact_window, width=50)
-        contact_listbox.pack()
-
-        for contact in contacts:
-            contact_listbox.insert(tk.END, f"{contact[1]}: {contact[2]}")  # Name: Phone Number
-
-    def add_contact(self):
-        contact_name = simpledialog.askstring("Input", "Enter contact name:")
-        if contact_name:
-            self.contacts.append(contact_name)
-            self.contact_listbox.insert(tk.END, contact_name)
-
-    def send_message(self, p_num, message, hour, minute):
+    def schedule_messages(self):
         try:
-            personalized_message = message.format(name=p_num.strip())
-            kt.sendwhatmsg(p_num.strip(), personalized_message, hour, minute)
-            messagebox.showinfo("Success", f"Message sent to {p_num.strip()} at {hour}:{minute} with message: {personalized_message}")
-            database.log_message(p_num.strip(), personalized_message, "Sent")
-            logging.info(f"Message sent to {p_num.strip()} at {hour}:{minute} with message: {personalized_message}")
-        except Exception as e:
-            logging.error(f"Failed to send message to {p_num.strip()}: {e}")
-            messagebox.showerror("Error", f"Failed to send message to {p_num.strip()}: {e}")
+            recipients = validate_recipients(self.phone_entry.get())
+            message = validate_message(self.message_entry.get("1.0", "end-1c"))
+            time_text = validate_daily_time(self.time_entry.get())
+        except ValueError as exc:
+            messagebox.showerror("Check your input", str(exc), parent=self.root)
+            return
+
+        if not messagebox.askyesno(
+            "Confirm schedule",
+            f"Schedule this message daily at {time_text} for {len(recipients)} recipient(s)?\n\n"
+            "Confirm that every recipient has consented. This uses unofficial browser automation.",
+            parent=self.root,
+        ):
+            return
+
+        added = 0
+        try:
+            for number in recipients:
+                signature = (number, message, time_text)
+                if signature in self.scheduled_signatures:
+                    continue
+                database.add_scheduled_job(number, message, time_text)
+                with self.schedule_lock:
+                    schedule.every().day.at(time_text).do(self._enqueue_message, number, message)
+                    self.scheduled_signatures.add(signature)
+                added += 1
+        except Exception as exc:
+            messagebox.showerror("Could not save schedule", str(exc), parent=self.root)
+            self._reload_schedules()
+            return
+        if added == 0:
+            self.status.set("These recipients already have this message scheduled for that time.")
+            return
+        database.log_message(", ".join(recipients), message, "Scheduled daily at " + time_text)
+        self.status.set(f"Scheduled {added} new recipient(s) daily at {time_text}.")
+        LOG.info("Scheduled %d new recipient(s) for %s", added, time_text)
+
+    def _load_scheduled_jobs(self):
+        """Restore enabled daily jobs from SQLite after app startup."""
+        for _job_id, phone, message, send_time, _enabled, _created in database.get_scheduled_jobs():
+            signature = (phone, message, send_time)
+            if signature not in self.scheduled_signatures:
+                with self.schedule_lock:
+                    schedule.every().day.at(send_time).do(self._enqueue_message, phone, message)
+                    self.scheduled_signatures.add(signature)
+
+    def _reload_schedules(self):
+        with self.schedule_lock:
+            schedule.clear()
+            self.scheduled_signatures.clear()
+            self._load_scheduled_jobs()
+
+    def manage_schedules(self):
+        window = tk.Toplevel(self.root)
+        window.title("Scheduled messages")
+        window.geometry("780x360")
+        listing = tk.Listbox(window, width=110)
+        listing.pack(fill="both", expand=True, padx=10, pady=10)
+
+        def refresh():
+            listing.delete(0, tk.END)
+            for job in database.get_scheduled_jobs():
+                listing.insert(tk.END, f"{job[0]} | Daily {job[3]} | {job[1]} | {job[2][:90]}")
+
+        def cancel_selected():
+            selected = listing.curselection()
+            if not selected:
+                messagebox.showinfo("Select schedule", "Select a scheduled message first.", parent=window)
+                return
+            job_id = int(listing.get(selected[0]).split("|", 1)[0].strip())
+            if messagebox.askyesno("Cancel schedule", "Remove this recurring schedule?", parent=window):
+                database.delete_scheduled_job(job_id)
+                self._reload_schedules()
+                refresh()
+                self.status.set("Selected recurring schedule cancelled.")
+
+        ttk.Button(window, text="Cancel selected schedule", command=cancel_selected).pack(pady=(0, 10))
+        refresh()
+
+    def _scheduler_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                with self.schedule_lock:
+                    schedule.run_pending()
+            except Exception:
+                LOG.exception("Scheduler loop error")
+            self.stop_event.wait(1)
+
+    def _enqueue_message(self, phone, template):
+        """Queue due work quickly so browser automation never blocks scheduling."""
+        self.send_queue.put((phone, template))
+
+    def _sender_loop(self):
+        """Serialize browser actions through a single background worker."""
+        while not self.stop_event.is_set():
+            try:
+                item = self.send_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                if item is None:
+                    return
+                phone, template = item
+                self._send_message(phone, template)
+            finally:
+                self.send_queue.task_done()
+
+    def _send_message(self, phone, template):
+        # Called by the scheduler worker, never directly by the Tkinter event loop.
+        personalized = template
+        try:
+            personalized = template.format(name=self._contact_name(phone))
+            # This sends immediately when the scheduled job fires. It relies on
+            # WhatsApp Web/browser automation and may fail if the session is not ready.
+            pywhatkit.sendwhatmsg_instantly(
+                phone, personalized, wait_time=20, tab_close=True, close_time=3
+            )
+            database.log_message(phone, personalized, "Automation submitted; delivery unconfirmed")
+            LOG.info("Automation submitted for recipient ending %s", phone[-4:])
+            self.jobs.put(("status", f"Automation submitted for recipient ending {phone[-4:]}; delivery is unconfirmed."))
+        except Exception as exc:
+            try:
+                database.log_message(phone, personalized, "Failed: " + str(exc)[:300])
+            except Exception:
+                LOG.exception("Could not persist failed message outcome")
+            LOG.exception("Automation failed for recipient ending %s", phone[-4:])
+            self.jobs.put(("error", f"Could not send to recipient ending {phone[-4:]}: {exc}"))
+        # Keep the job scheduled daily; the UI explicitly labels this recurring behavior.
+
+    @staticmethod
+    def _contact_name(phone):
+        try:
+            for contact in database.get_contacts():
+                if contact[2] == phone:
+                    return contact[1]
+        except Exception:
+            LOG.exception("Could not look up contact name")
+        return phone
+
+    def open_logs(self):
+        window = tk.Toplevel(self.root)
+        window.title("Message Logs")
+        window.geometry("760x360")
+        listing = tk.Listbox(window, width=110)
+        listing.pack(fill="both", expand=True, padx=10, pady=10)
+        for row in database.get_logs():
+            listing.insert(tk.END, f"{row[4]} | {row[1]} | {row[3]} | {row[2][:100]}")
 
     def manage_contacts(self):
-        self.contact_window = tk.Toplevel(self.root)
-        self.contact_window.title("Contact Management")
+        window = tk.Toplevel(self.root)
+        window.title("Contact Management")
+        window.geometry("520x400")
+        listing = tk.Listbox(window)
+        listing.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.contact_label = tk.Label(self.contact_window, text="Contacts:")
-        self.contact_label.pack()
+        def refresh():
+            listing.delete(0, tk.END)
+            for contact in database.get_contacts():
+                listing.insert(tk.END, f"{contact[0]} | {contact[1]} | {contact[2]}")
 
-        self.contact_listbox = tk.Listbox(self.contact_window)
-        self.contact_listbox.pack()
+        def add():
+            name = simpledialog.askstring("Add contact", "Contact name:", parent=window)
+            if not name or not name.strip():
+                return
+            phone = simpledialog.askstring("Add contact", "Phone in international format (+254...):", parent=window)
+            if not phone:
+                return
+            try:
+                from validation import normalize_phone
+                phone = normalize_phone(phone)
+                database.add_contact(name.strip(), phone)
+                refresh()
+            except Exception as exc:
+                messagebox.showerror("Could not add contact", str(exc), parent=window)
 
-        self.add_contact_button = tk.Button(self.contact_window, text="Add Contact", command=self.add_contact)
-        self.add_contact_button.pack()
+        def delete():
+            selected = listing.curselection()
+            if not selected:
+                messagebox.showinfo("Select contact", "Select a contact first.", parent=window)
+                return
+            contact_id = int(listing.get(selected[0]).split("|", 1)[0].strip())
+            if messagebox.askyesno("Delete contact", "Delete the selected contact?", parent=window):
+                database.delete_contact(contact_id)
+                refresh()
 
-        self.delete_contact_button = tk.Button(self.contact_window, text="Delete Contact", command=self.delete_contact)
-        self.delete_contact_button.pack()
+        buttons = ttk.Frame(window)
+        buttons.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="Add", command=add).pack(side="left")
+        ttk.Button(buttons, text="Delete selected", command=delete).pack(side="left", padx=6)
+        refresh()
 
-        self.load_contacts()
+    def _poll_worker_messages(self):
+        try:
+            while True:
+                kind, message = self.jobs.get_nowait()
+                self.status.set(message)
+                if kind == "error":
+                    messagebox.showerror("Automation failed", message, parent=self.root)
+        except queue.Empty:
+            pass
+        if not self.stop_event.is_set():
+            self.root.after(250, self._poll_worker_messages)
 
-    def delete_contact(self):
-        selected_contact_index = self.contact_listbox.curselection()
-        if selected_contact_index:
-            contact_id = self.contacts[selected_contact_index[0]][0]  # Assuming the first element is the ID
-            database.delete_contact(contact_id)
-            self.contact_listbox.delete(selected_contact_index)
-            messagebox.showinfo("Success", "Contact deleted successfully.")
-        else:
-            messagebox.showwarning("Warning", "Please select a contact to delete.")
+    def close(self):
+        self.stop_event.set()
+        self.send_queue.put(None)
+        with self.schedule_lock:
+            schedule.clear()
+            self.scheduled_signatures.clear()
+        self.root.destroy()
 
-    def run_scheduler(self):
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = WhatsAppAutomationApp(root)
+    app._poll_worker_messages()
     root.mainloop()
