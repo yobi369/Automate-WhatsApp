@@ -28,10 +28,15 @@ class WhatsAppAutomationApp:
         self.root.geometry("640x560")
         self.root.minsize(520, 420)
         self.jobs = queue.Queue()
+        self.send_queue = queue.Queue()
+        self.schedule_lock = threading.RLock()
         self.scheduled_signatures = set()
         self.stop_event = threading.Event()
         self.scheduler_thread = threading.Thread(
             target=self._scheduler_loop, name="message-scheduler", daemon=True
+        )
+        self.sender_thread = threading.Thread(
+            target=self._sender_loop, name="message-sender", daemon=True
         )
         database.create_table()
         database.create_contact_table()
@@ -39,6 +44,7 @@ class WhatsAppAutomationApp:
         self._build_ui()
         self._load_scheduled_jobs()
         self.scheduler_thread.start()
+        self.sender_thread.start()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _build_ui(self):
@@ -93,8 +99,9 @@ class WhatsAppAutomationApp:
                 if signature in self.scheduled_signatures:
                     continue
                 database.add_scheduled_job(number, message, time_text)
-                schedule.every().day.at(time_text).do(self._send_message, number, message)
-                self.scheduled_signatures.add(signature)
+                with self.schedule_lock:
+                    schedule.every().day.at(time_text).do(self._enqueue_message, number, message)
+                    self.scheduled_signatures.add(signature)
                 added += 1
         except Exception as exc:
             messagebox.showerror("Could not save schedule", str(exc), parent=self.root)
@@ -112,13 +119,15 @@ class WhatsAppAutomationApp:
         for _job_id, phone, message, send_time, _enabled, _created in database.get_scheduled_jobs():
             signature = (phone, message, send_time)
             if signature not in self.scheduled_signatures:
-                schedule.every().day.at(send_time).do(self._send_message, phone, message)
-                self.scheduled_signatures.add(signature)
+                with self.schedule_lock:
+                    schedule.every().day.at(send_time).do(self._enqueue_message, phone, message)
+                    self.scheduled_signatures.add(signature)
 
     def _reload_schedules(self):
-        schedule.clear()
-        self.scheduled_signatures.clear()
-        self._load_scheduled_jobs()
+        with self.schedule_lock:
+            schedule.clear()
+            self.scheduled_signatures.clear()
+            self._load_scheduled_jobs()
 
     def manage_schedules(self):
         window = tk.Toplevel(self.root)
@@ -150,10 +159,30 @@ class WhatsAppAutomationApp:
     def _scheduler_loop(self):
         while not self.stop_event.is_set():
             try:
-                schedule.run_pending()
+                with self.schedule_lock:
+                    schedule.run_pending()
             except Exception:
                 LOG.exception("Scheduler loop error")
             self.stop_event.wait(1)
+
+    def _enqueue_message(self, phone, template):
+        """Queue due work quickly so browser automation never blocks scheduling."""
+        self.send_queue.put((phone, template))
+
+    def _sender_loop(self):
+        """Serialize browser actions through a single background worker."""
+        while not self.stop_event.is_set():
+            try:
+                item = self.send_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                if item is None:
+                    return
+                phone, template = item
+                self._send_message(phone, template)
+            finally:
+                self.send_queue.task_done()
 
     def _send_message(self, phone, template):
         # Called by the scheduler worker, never directly by the Tkinter event loop.
@@ -253,8 +282,10 @@ class WhatsAppAutomationApp:
 
     def close(self):
         self.stop_event.set()
-        schedule.clear()
-        self.scheduled_signatures.clear()
+        self.send_queue.put(None)
+        with self.schedule_lock:
+            schedule.clear()
+            self.scheduled_signatures.clear()
         self.root.destroy()
 
 
