@@ -66,7 +66,7 @@ class WhatsAppAutomationApp:
         ttk.Button(row, text="Contacts", command=self.manage_contacts).pack(side="left")
         ttk.Button(row, text="Schedules", command=self.manage_schedules).pack(side="left", padx=6)
 
-        self.status = tk.StringVar(value="Ready. Scheduled jobs run daily until the app closes.")
+        self.status = tk.StringVar(value="Ready. Saved daily schedules run while the app is open and restore after restart.")
         ttk.Label(frame, textvariable=self.status, wraplength=570).pack(anchor="w", pady=(12, 0))
 
     def schedule_messages(self):
