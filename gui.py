@@ -98,8 +98,9 @@ class WhatsAppAutomationApp:
 
     def _send_message(self, phone, template):
         # Called by the scheduler worker, never directly by the Tkinter event loop.
+        personalized = template
         try:
-            personalized = template.format(name=phone)
+            personalized = template.format(name=self._contact_name(phone))
             # This sends immediately when the scheduled job fires. It relies on
             # WhatsApp Web/browser automation and may fail if the session is not ready.
             pywhatkit.sendwhatmsg_instantly(
@@ -109,10 +110,23 @@ class WhatsAppAutomationApp:
             LOG.info("Automation submitted for recipient ending %s", phone[-4:])
             self.jobs.put(("status", f"Automation submitted for recipient ending {phone[-4:]}; delivery is unconfirmed."))
         except Exception as exc:
-            database.log_message(phone, personalized, "Failed: " + str(exc)[:300])
+            try:
+                database.log_message(phone, personalized, "Failed: " + str(exc)[:300])
+            except Exception:
+                LOG.exception("Could not persist failed message outcome")
             LOG.exception("Automation failed for recipient ending %s", phone[-4:])
             self.jobs.put(("error", f"Could not send to recipient ending {phone[-4:]}: {exc}"))
         # Keep the job scheduled daily; the UI explicitly labels this recurring behavior.
+
+    @staticmethod
+    def _contact_name(phone):
+        try:
+            for contact in database.get_contacts():
+                if contact[2] == phone:
+                    return contact[1]
+        except Exception:
+            LOG.exception("Could not look up contact name")
+        return phone
 
     def open_logs(self):
         window = tk.Toplevel(self.root)
