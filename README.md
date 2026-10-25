@@ -7,7 +7,8 @@ A Python desktop utility for preparing WhatsApp messages, managing contacts, sch
 ## Current capabilities
 
 - Tkinter desktop interface
-- SQLite persistence for contacts and message logs
+- SQLite persistence for contacts, message logs, and recurring daily schedules
+- Restore enabled daily schedules on startup and cancel schedules from the UI
 - Message scheduling via the schedule package
 - Basic message personalization
 - Application logging
@@ -42,7 +43,7 @@ The SQLite database and logs are stored locally and may contain phone numbers an
 
 ## Production readiness
 
-This is a desktop utility, not a hosted multi-user messaging service. The current browser-automation integration is fragile and cannot guarantee delivery or account safety. Review `docs/ROADMAP.md` for the work required before production use, especially scheduler correctness, thread safety, consent controls, tests, and end-to-end verification.
+This is a desktop utility, not a hosted multi-user messaging service. The current browser-automation integration is fragile and cannot guarantee delivery or account safety. Review `docs/ROADMAP.md` for the work required before production use, especially durable execution/retries, thread safety, consent controls, automated verification, and end-to-end testing. Scheduled times use the computer's local timezone and jobs execute only while the desktop application is running.
 
 For business-critical messaging, evaluate the official WhatsApp Business Platform and its current requirements instead of relying on browser automation.
 
