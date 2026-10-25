@@ -12,6 +12,7 @@ class DatabaseTests(unittest.TestCase):
         os.chdir(self.tempdir.name)
         database.create_table()
         database.create_contact_table()
+        database.create_scheduled_jobs_table()
 
     def tearDown(self):
         os.chdir(self.previous_cwd)
@@ -32,6 +33,23 @@ class DatabaseTests(unittest.TestCase):
     def test_reject_empty_contact(self):
         with self.assertRaises(ValueError):
             database.add_contact("", "+254700000000")
+
+    def test_scheduled_job_persists(self):
+        database.add_scheduled_job("+254700000000", "Hello {name}", "09:30")
+        jobs = database.get_scheduled_jobs()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0][1:4], ("+254700000000", "Hello {name}", "09:30"))
+
+    def test_duplicate_schedules_are_idempotent(self):
+        first = database.add_scheduled_job("+254700000000", "Hello", "09:30")
+        second = database.add_scheduled_job("+254700000000", "Hello", "09:30")
+        self.assertEqual(first, second)
+        self.assertEqual(len(database.get_scheduled_jobs()), 1)
+
+    def test_delete_scheduled_job(self):
+        job_id = database.add_scheduled_job("+254700000000", "Hello", "09:30")
+        database.delete_scheduled_job(job_id)
+        self.assertEqual(database.get_scheduled_jobs(), [])
 
     def test_log_message(self):
         database.log_message("+254700000000", "Test message", "Queued")
