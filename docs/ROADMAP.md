@@ -4,7 +4,7 @@
 
 - [x] Fix the Send Message action so it schedules/sends rather than opening the log window.
 - [x] Keep the Tkinter event loop responsive; do not run an infinite scheduler loop on the UI thread.
-- [ ] Define one scheduling model and avoid scheduling the same recipient repeatedly on every UI interaction.
+- [x] Define recurring daily scheduling and prevent duplicate recipient/message/time schedules.
 - [x] Validate international phone numbers, time values, empty messages, and personalization inputs before enqueueing.
 - [x] Record outcomes accurately; an automation call is not proof of delivery or read status.
 - [x] Show background worker errors on the UI thread safely.
@@ -13,23 +13,23 @@
 
 ## P1 — reliability
 
-**Implemented in this branch:** background scheduler loop, UI-safe result queue, recipient/message/time validation, contact-name personalization, duplicate in-memory schedule guard, and SQLite operation tests. The schedule is still in-memory and is lost on app exit; browser operations are not crash-safe.
+**Implemented in this branch:** background scheduler loop, UI-safe result queue, recipient/message/time validation, contact-name personalization, duplicate-schedule protection, persistent SQLite schedule storage, startup restoration, schedule cancellation, and SQLite/validation tests. Browser operations are not crash-safe; a send already in progress may not be cancellable.
 
-- [ ] Add persistent scheduled jobs with timezone-aware timestamps and restart recovery.
+- [x] Persist recurring daily schedules in SQLite and restore them on startup. Timezone selection and crash-safe execution remain open.
 - [ ] Add bounded retries with backoff and an error/dead-letter view.
-- [x] Keep browser automation off the UI event loop; a persistent, explicitly serialized job queue remains future work.
-- [ ] Add database transactions, context-managed connections, indexes, and duplicate-contact policy.
+- [x] Keep browser automation off the UI event loop. A durable, explicitly serialized execution queue and concurrency control remain future work.
+- [ ] Standardize database transactions/context-managed connections across legacy functions and add a duplicate-contact policy.
 - [ ] Add database migration/versioning and backup/restore instructions.
 - [ ] Redact phone numbers and message bodies from routine logs.
 - [ ] Add graceful shutdown and safe cancellation.
 
 ## P2 — quality and release engineering
 
-- [x] Add unit tests for validation, database operations, scheduling, and failure paths.
-- [x] Add CI for supported Python versions, linting, and tests.
+- [x] Add unit tests for input validation and database contact/log/schedule operations. Scheduler timing and browser failure-path tests remain open.
+- [x] Add CI for Python compilation and unit tests. Linting and a multi-version test matrix remain open.
 - [ ] Pin dependencies and automate dependency/security review.
 - [ ] Test on intended desktop environments with a real WhatsApp test account.
-- [ ] Document supported Python/browser combinations and known limitations.
+- [x] Document setup requirements and known limitations; a verified browser/platform compatibility matrix remains open.
 - [ ] Add a clear license and versioned release process.
 
 ## Integration decision
