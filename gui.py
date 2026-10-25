@@ -28,6 +28,7 @@ class WhatsAppAutomationApp:
         self.root.geometry("640x560")
         self.root.minsize(520, 420)
         self.jobs = queue.Queue()
+        self.scheduled_signatures = set()
         self.stop_event = threading.Event()
         self.scheduler_thread = threading.Thread(
             target=self._scheduler_loop, name="message-scheduler", daemon=True
@@ -82,11 +83,20 @@ class WhatsAppAutomationApp:
         ):
             return
 
+        added = 0
         for number in recipients:
+            signature = (number, message, time_text)
+            if signature in self.scheduled_signatures:
+                continue
             schedule.every().day.at(time_text).do(self._send_message, number, message)
+            self.scheduled_signatures.add(signature)
+            added += 1
+        if added == 0:
+            self.status.set("These recipients already have this message scheduled for that time.")
+            return
         database.log_message(", ".join(recipients), message, "Scheduled daily at " + time_text)
-        self.status.set(f"Scheduled {len(recipients)} recipient(s) daily at {time_text}.")
-        LOG.info("Scheduled %d recipient(s) for %s", len(recipients), time_text)
+        self.status.set(f"Scheduled {added} new recipient(s) daily at {time_text}.")
+        LOG.info("Scheduled %d new recipient(s) for %s", added, time_text)
 
     def _scheduler_loop(self):
         while not self.stop_event.is_set():
@@ -195,6 +205,7 @@ class WhatsAppAutomationApp:
     def close(self):
         self.stop_event.set()
         schedule.clear()
+        self.scheduled_signatures.clear()
         self.root.destroy()
 
 
