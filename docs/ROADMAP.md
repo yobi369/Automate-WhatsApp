@@ -13,11 +13,11 @@
 
 ## P1 — reliability
 
-**Implemented in this branch:** background scheduler loop, UI-safe result queue, recipient/message/time validation, contact-name personalization, duplicate-schedule protection, persistent SQLite schedule storage, startup restoration, schedule cancellation, and SQLite/validation tests. Browser operations are not crash-safe; a send already in progress may not be cancellable.
+**Implemented in this branch:** background scheduler loop, serialized sender worker queue, UI-safe result queue, recipient/message/time validation, contact-name personalization, duplicate-schedule protection, persistent SQLite schedule storage, startup restoration, schedule cancellation, and SQLite/validation tests. Browser operations are not crash-safe; a send already in progress may not be cancellable.
 
 - [x] Persist recurring daily schedules in SQLite and restore them on startup. Timezone selection and crash-safe execution remain open.
 - [ ] Add bounded retries with backoff and an error/dead-letter view.
-- [x] Keep browser automation off the UI event loop. A durable, explicitly serialized execution queue and concurrency control remain future work.
+- [x] Keep browser automation off the UI event loop and serialize sends through a dedicated worker. Crash-safe execution remains future work.
 - [ ] Standardize database transactions/context-managed connections across legacy functions and add a duplicate-contact policy.
 - [ ] Add database migration/versioning and backup/restore instructions.
 - [ ] Redact phone numbers and message bodies from routine logs.
