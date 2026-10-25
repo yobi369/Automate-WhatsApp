@@ -95,7 +95,8 @@ if __name__ == "__main__":
 
 def create_scheduled_jobs_table():
     """Create durable recurring-job storage; existing databases migrate automatically."""
-    with create_connection() as conn:
+    conn = create_connection()
+    try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scheduled_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,12 +109,16 @@ def create_scheduled_jobs_table():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_enabled ON scheduled_jobs(enabled)")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def add_scheduled_job(phone_number, message, send_time):
     if not phone_number or not message or not send_time:
         raise ValueError("Phone number, message and send time are required.")
-    with create_connection() as conn:
+    conn = create_connection()
+    try:
         conn.execute(
             """INSERT OR IGNORE INTO scheduled_jobs (phone_number, message, send_time)
                VALUES (?, ?, ?)""",
@@ -124,11 +129,15 @@ def add_scheduled_job(phone_number, message, send_time):
                WHERE phone_number = ? AND message = ? AND send_time = ?""",
             (phone_number, message, send_time),
         ).fetchone()
+        conn.commit()
         return row[0]
+    finally:
+        conn.close()
 
 
 def get_scheduled_jobs(enabled_only=True):
-    with create_connection() as conn:
+    conn = create_connection()
+    try:
         if enabled_only:
             rows = conn.execute(
                 """SELECT id, phone_number, message, send_time, enabled, created_at
@@ -140,10 +149,14 @@ def get_scheduled_jobs(enabled_only=True):
                    FROM scheduled_jobs ORDER BY id"""
             ).fetchall()
         return rows
+    finally:
+        conn.close()
 
 
 def delete_scheduled_job(job_id):
-    with create_connection() as conn:
+    conn = create_connection()
+    try:
         conn.execute("DELETE FROM scheduled_jobs WHERE id = ?", (job_id,))
-
-
+        conn.commit()
+    finally:
+        conn.close()
